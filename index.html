@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Solo Leveling — Auto Reader</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0f1115; color:#e7e7e7; }
+  header, footer { background:#171a1f; padding:8px 12px; position:sticky; z-index:2; }
+  header { top:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  footer { bottom:0; text-align:center; color:#aeb3b9; font-size:12px; }
+  main { display:flex; justify-content:center; align-items:center; min-height: calc(100dvh - 120px); }
+  select, button, input[type="number"] { background:#22252b; color:#e7e7 solid #2e3238; border-radius:8px; padding:6px 10px; }
+  button { cursor:pointer; }
+  .spacer { flex:1; }
+  #page { max-width:100%; max-height: calc(100dvh - 140px); object-fit:contain; background:#000; }
+  .counter { opacity:0.9; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#0f1115; color:#cbd3dc; font-size:15px; }
+  #err { color:#ffb4b4; white-space:pre-wrap; }
+  .small { font-size:12px; opacity:0.85; }
+</style>
+</head>
+<body>
+  <div id="loading">Loading chapters from GitHub…</div>
+
+  <header>
+    <div class="row">
+      <strong>Solo Leveling</strong>
+      <label>Chapter:
+        <select id="chapters"></select>
+      </label>
+      <div class="spacer"></div>
+      <label class="counter"><span id="pageNum">1</span>/<span id="pageTotal">?</span></label>
+      <button id="prev">◀ Prev</button>
+      <button id="next">Next ▶</button>
+      <label>Page: <input id="goto" type="number" min="1" value="1" style="width:80px"></label>
+      <button id="go">Go</button>
+      <label title="Right-to-left navigation"><input type="checkbox" id="rtl"> RTL</label>
+      <label title="Fit width (best for tall webtoon pages)"><input type="checkbox" id="fitW" checked> Fit width</label>
+    </div>
+  </header>
+
+  <main>
+    <img id="page" alt="Manga page" />
+  </main>
+
+  <footer>
+    <small class="small">Tip: Use ← / → keys. If auto-detect fails, override with ?base=manga/solo-leveling&branch=main.</small>
+  </footer>
+
+<script>
+(async () => {
+  const qs = new URLSearchParams(location.search);
+  const IMAGE_EXTS = (qs.get('exts') || 'jpg,jpeg,png,webp,avif').split(',').map(s=>s.trim().toLowerCase());
+  const BASE = (qs.get('base') || 'manga/solo-leveling').replace(/^\/+|\/+$/g,'');
+  let owner = qs.get('owner') || '';
+  let repo  = qs.get('repo')  || '';
+  let branch = qs.get('branch') || '';
+  const useRaw = (qs.get('raw') ?? '1') !== '0';
+
+  function detectOwnerRepo() {
+    const host = location.hostname;
+    const parts = host.split('.');
+    const userPart = parts[0];
+    const seg = location.pathname.split('/').filter(Boolean);
+    if (!owner) owner = userPart;
+    if (!repo) repo = seg.length ? seg[0] : `${owner}.github.io`;
+  }
+  detectOwnerRepo();
+
+  const API = (p) => `https://api.github.com${p}`;
+  const RAW = (p) => `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${p}`;
+  const SITE = (p) => {
+    const seg = location.pathname.split('/').filter(Boolean);
+    const baseSeg = seg.length ? `/${seg[0]}/` : '/';
+    return baseSeg.replace(/\/+$/,'/') + p.replace(/^\/+/,'');
+  };
+
+  const $ = (s) => document.querySelector(s);
+  const loading = $('#loading');
+  const chSel = $('#chapters'), img = $('#page');
+  const pageNumEl = $('#pageNum'), pageTotalEl = $('#pageTotal');
+  const prevBtn = $('#prev'), nextBtn = $('#next'), gotoInput = $('#goto'), goBtn = $('#go');
+  const rtl = $('#rtl'), fitW = $('#fitW');
+
+  let chapters = [];
+  let ci = 0, pi = 0;
+
+  function naturalSort(a,b){return a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'});}
+  function setLoading(t){loading.textContent=t;}
+  function hideLoading(){loading.style.display='none';}
+  function showError(err){loading.innerHTML=`<div id="err">${err}</div>`;loading.style.display='flex';}
+  async function getJSON(u){const r=await fetch(u,{headers:{'Accept':'application/vnd.github+json'}});if(!r.ok)throw new Error(`${r.status} ${r.statusText}`);return await r.json();}
+  async function detectBranch(){if(branch)return branch;const info=await getJSON(API(`/repos/${owner}/${repo}`));branch=info.default_branch||'main';return branch;}
+  async function fetchTree(){const b=await detectBranch();const br=await getJSON(API(`/repos/${owner}/${repo}/branches/${b}`));const sha=br.commit?.commit?.tree?.sha;if(!sha)throw new Error('No tree SHA');const tree=await getJSON(API(`/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`));return tree.tree;}
+  function isImagePath(p){const m=p.toLowerCase().match(/\\.([a-z0-9]+)$/);return m&&IMAGE_EXTS.includes(m[1]);}
+  function groupChapters(paths){const filtered=paths.filter(n=>n.type==='blob'&&n.path.startsWith(`${BASE}/`)&&isImagePath(n.path)).map(n=>n.path);const groups=new Map();for(const p of filtered){const rest=p.slice(BASE.length+1);const [dir,...tail]=rest.split('/');if(!dir||!tail.length)continue;if(!groups.has(dir))groups.set(dir,[]);groups.get(dir).push(p);}const out=[];const names=[...groups.keys()].sort(naturalSort);for(const name of names){const files=groups.get(name).sort(naturalSort);out.push({title:name,files});}return out;}
+  function toImageURL(p){return useRaw?RAW(p):SITE(p);}
+  function populateUI(){chSel.innerHTML=chapters.map((c,i)=>`<option value="${i}">${c.title}</option>`).join('');chSel.addEventListener('change',e=>{ci=+e.target.value;pi=0;render();});prevBtn.addEventListener('click',prev);nextBtn.addEventListener('click',next);goBtn.addEventListener('click',()=>goTo(+gotoInput.value||1));document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')next();if(e.key==='ArrowLeft')prev();});fitW.addEventListener('change',render);rtl.addEventListener('change',render);}
+  function enableNav(on){prevBtn.disabled=nextBtn.disabled=goBtn.disabled=gotoInput.disabled=!on;}
+  function render(){const ch=chapters[ci];if(!ch)return;const total=ch.files.length;pageTotalEl.textContent=total;const logical=pi+1;pageNumEl.textContent=logical;gotoInput.value=logical;const repoPath=ch.files[pi];let tried=false;img.onerror=()=>{if(useRaw&&!tried){tried=true;img.src=SITE(repoPath);}};if(fitW.checked){img.style.width='100%';img.style.height='';}else{img.style.width='';img.style.height='calc(100dvh - 140px)';}img.src=toImageURL(repoPath);}
+  function next(){const ch=chapters[ci];if(!ch)return;if(rtl.checked){if(pi>0)pi--;else if(ci<chapters.length-1){ci++;pi=0;}}else{if(pi<ch.files.length-1)pi++;else if(ci<chapters.length-1){ci++;pi=0;}}render();}
+  function prev(){const ch=chapters[ci];if(!ch)return;if(rtl.checked){if(pi<ch.files.length-1)pi++;else if(ci>0){ci--;pi=chapters[ci].files.length-1;}}else{if(pi>0)pi--;else if(ci>0){ci--;pi=chapters[ci].files.length-1;}}render();}
+  function goTo(n){const ch=chapters[ci];if(!ch)return;pi=Math.min(Math.max(1,n),ch.files.length)-1;render();}
+
+  try{
+    setLoading('Detecting repository…');
+    if(!owner||!repo)throw new Error('Could not detect owner/repo. Add ?owner=<user>&repo=<repo>.');
+    setLoading('Getting default branch…');await detectBranch();
+    setLoading('Loading chapter list…');const tree=await fetchTree();const grouped=groupChapters(tree);
+    if(!grouped.length){showError(`No chapters found under ${BASE}. Place images like ${BASE}/chapter-001/001.jpg`);return;}
+    chapters=grouped;hideLoading();populateUI();enableNav(true);ci=0;pi=0;render();
+  }catch(e){showError(`Error: ${e.message||e}`);}
+})();
+</script>
+</body>
+</html>
