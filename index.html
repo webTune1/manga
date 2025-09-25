@@ -10,7 +10,7 @@
   header, footer { background:#171a1f; padding:8px 12px; position:sticky; z-index:2; }
   header { top:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   footer { bottom:0; text-align:center; color:#aeb3b9; font-size:12px; }
-  main { display:flex; justify-content:center; align-items:flex-start; min-height: calc(100dvh - 120px); flex-direction:column; width:100%; }
+  main { display:flex; justify-content:center; align-items:center; min-height: calc(100dvh - 120px); }
   select, button, input[type="number"] { background:#22252b; color:#e7e7e7; border:1px solid #2e3238; border-radius:8px; padding:6px 10px; }
   button { cursor:pointer; }
   .spacer { flex:1; }
@@ -20,7 +20,6 @@
   #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#0f1115; color:#cbd3dc; font-size:15px; }
   #err { color:#ffb4b4; white-space:pre-wrap; }
   .small { font-size:12px; opacity:0.85; }
-  .webtoon-img { width:100%; display:block; margin-bottom:20px; }
 </style>
 </head>
 <body>
@@ -38,13 +37,12 @@
       <button id="next">Next ▶</button>
       <label>Page: <input id="goto" type="number" min="1" value="1" style="width:80px"></label>
       <button id="go">Go</button>
-      <label><input type="checkbox" id="rtl"> RTL</label>
-      <label><input type="checkbox" id="fitW" checked> Fit width</label>
-      <label><input type="checkbox" id="webtoon"> Webtoon Mode</label>
+      <label title="Right-to-left navigation"><input type="checkbox" id="rtl"> RTL</label>
+      <label title="Fit width (best for tall webtoon pages)"><input type="checkbox" id="fitW" checked> Fit width</label>
     </div>
   </header>
 
-  <main id="reader">
+  <main>
     <img id="page" alt="Manga page" />
   </main>
 
@@ -54,26 +52,33 @@
       <code>?base=anime/solo-leveling&amp;branch=main</code>.
     </small>
   </footer>
+
 <script>
 (async () => {
+  // -------- CONFIG (defaults to your path) --------
   const qs = new URLSearchParams(location.search);
   const IMAGE_EXTS = (qs.get('exts') || 'jpg,jpeg,png,webp,avif').split(',').map(s=>s.trim().toLowerCase());
-  const BASE = (qs.get('base') || 'anime/solo-leveling').replace(/^\/+|\/+$/g,'');
+  const BASE = (qs.get('base') || 'anime/solo-leveling').replace(/^\/+|\/+$/g,''); // <=== your folder
   let owner = qs.get('owner') || '';
   let repo  = qs.get('repo')  || '';
   let branch = qs.get('branch') || '';
-  const useRaw = (qs.get('raw') ?? '1') !== '0';
+  const useRaw = (qs.get('raw') ?? '1') !== '0'; // use raw.githubusercontent.com by default
 
+  // Try to detect owner/repo from URL (works for user & project pages)
   function detectOwnerRepo() {
-    const host = location.hostname;
+    const host = location.hostname;               // e.g., user.github.io
     const parts = host.split('.');
-    const userPart = parts[0];
-    const seg = location.pathname.split('/').filter(Boolean);
+    const userPart = parts[0];                    // user/org name
+    const seg = location.pathname.split('/').filter(Boolean); // ["repo", ...] or []
     if (!owner) owner = userPart;
-    if (!repo) repo = seg.length ? seg[0] : `${owner}.github.io`;
+    if (!repo) {
+      repo = seg.length ? seg[0]                 // project pages
+                        : `${owner}.github.io`;   // user/organization site
+    }
   }
   detectOwnerRepo();
 
+  // URL helpers
   const API = (p) => `https://api.github.com${p}`;
   const RAW = (p) => `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${p}`;
   const SITE = (p) => {
@@ -82,22 +87,26 @@
     return baseSeg.replace(/\/+$/,'/') + p.replace(/^\/+/,'');
   };
 
+  // DOM
   const $ = (s) => document.querySelector(s);
   const loading = $('#loading');
-  const chSel = $('#chapters'), img = $('#page'), reader = $('#reader');
+  const chSel = $('#chapters'), img = $('#page');
   const pageNumEl = $('#pageNum'), pageTotalEl = $('#pageTotal');
   const prevBtn = $('#prev'), nextBtn = $('#next'), gotoInput = $('#goto'), goBtn = $('#go');
-  const rtl = $('#rtl'), fitW = $('#fitW'), webtoon = $('#webtoon');
+  const rtl = $('#rtl'), fitW = $('#fitW');
 
-  let chapters = [];
+  // State
+  let chapters = []; // [{ title, files: [repoPath,...] }]
   let ci = 0, pi = 0;
 
+  // Helpers
   function naturalSort(a,b){return a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'});}
   function setLoading(t){loading.textContent=t;}
   function hideLoading(){loading.style.display='none';}
   function showError(err){loading.innerHTML=`<div id="err">${err}</div>`;loading.style.display='flex';}
   async function getJSON(u){const r=await fetch(u,{headers:{'Accept':'application/vnd.github+json'}});if(!r.ok)throw new Error(`${r.status} ${r.statusText}`);return await r.json();}
 
+  // Detect default branch if not provided
   async function detectBranch(){
     if (branch) return branch;
     const info = await getJSON(API(`/repos/${owner}/${repo}`));
@@ -105,6 +114,7 @@
     return branch;
   }
 
+  // Get full recursive tree for the repo
   async function fetchTree(){
     const b = await detectBranch();
     const br = await getJSON(API(`/repos/${owner}/${repo}/branches/${b}`));
@@ -120,16 +130,17 @@
     return !!(m && IMAGE_EXTS.includes(m[1]));
   }
 
+  // Group images by chapter folder immediately under BASE
   function groupChapters(paths){
     const filtered = paths
       .filter(n => n.type === 'blob' && n.path.startsWith(`${BASE}/`) && isImagePath(n.path))
       .map(n => n.path);
 
-    const groups = new Map();
+    const groups = new Map(); // chapterName -> [repoPath,...]
     for (const p of filtered) {
-      const rest = p.slice(BASE.length + 1);
+      const rest = p.slice(BASE.length + 1);        // e.g., "chapter-001/001.jpg"
       const [chapterDir, ...tail] = rest.split('/');
-      if (!chapterDir || !tail.length) continue;
+      if (!chapterDir || !tail.length) continue;    // skip files directly under BASE
       if (!groups.has(chapterDir)) groups.set(chapterDir, []);
       groups.get(chapterDir).push(p);
     }
@@ -144,6 +155,7 @@
   }
 
   function toImageURL(repoPath){ return useRaw ? RAW(repoPath) : SITE(repoPath); }
+
   function populateUI(){
     chSel.innerHTML = chapters.map((c,i)=>`<option value="${i}">${c.title}</option>`).join('');
     chSel.addEventListener('change', e => { ci = +e.target.value; pi = 0; render(); });
@@ -158,35 +170,12 @@
     });
     fitW.addEventListener('change', render);
     rtl.addEventListener('change', render);
-    webtoon.addEventListener('change', render);
   }
 
-  function enableNav(on){ 
-    prevBtn.disabled = nextBtn.disabled = goBtn.disabled = gotoInput.disabled = !on; 
-  }
+  function enableNav(on){ prevBtn.disabled = nextBtn.disabled = goBtn.disabled = gotoInput.disabled = !on; }
 
-  // --- Rendering ---
   function render(){
     const ch = chapters[ci]; if (!ch) return;
-
-    // Webtoon mode: show all pages stacked
-    if (webtoon.checked) {
-      reader.innerHTML = "";
-      ch.files.forEach((repoPath, idx) => {
-        const img = document.createElement("img");
-        img.src = toImageURL(repoPath);
-        img.alt = `${ch.title} — ${idx+1}`;
-        img.className = "webtoon-img";
-        reader.appendChild(img);
-      });
-      pageNumEl.textContent = "-";
-      pageTotalEl.textContent = ch.files.length;
-      return;
-    }
-
-    // Single-page mode
-    reader.innerHTML = "";
-    reader.appendChild(img);
     const total = ch.files.length;
     pageTotalEl.textContent = total;
     const logical = pi + 1;
@@ -195,13 +184,15 @@
 
     const repoPath = ch.files[pi];
     let triedFallback = false;
+
     img.onerror = () => {
       if (useRaw && !triedFallback) {
         triedFallback = true;
-        img.src = SITE(repoPath);
+        img.src = SITE(repoPath);    // fallback to site-relative URL
       }
     };
 
+    // Fit mode
     if (fitW.checked) { img.style.width = '100%'; img.style.height = ''; }
     else { img.style.width = ''; img.style.height = 'calc(100dvh - 140px)'; }
 
@@ -210,7 +201,6 @@
   }
 
   function next(){
-    if (webtoon.checked) return; // no next in webtoon mode
     const ch = chapters[ci]; if (!ch) return;
     if (rtl.checked) {
       if (pi > 0) pi--; else if (ci < chapters.length - 1) { ci++; pi = 0; }
@@ -221,7 +211,6 @@
   }
 
   function prev(){
-    if (webtoon.checked) return; // no prev in webtoon mode
     const ch = chapters[ci]; if (!ch) return;
     if (rtl.checked) {
       if (pi < ch.files.length - 1) pi++; else if (ci > 0) { ci--; pi = chapters[ci].files.length - 1; }
@@ -232,13 +221,12 @@
   }
 
   function goTo(n){
-    if (webtoon.checked) return; // not relevant in webtoon mode
     const ch = chapters[ci]; if (!ch) return;
     const target = Math.min(Math.max(1, n), ch.files.length) - 1;
     pi = target; render();
   }
 
-  // --- Run ---
+  // -------- RUN --------
   try {
     setLoading('Detecting repository…');
     if (!owner || !repo) throw new Error('Could not detect owner/repo. Add ?owner=<user>&repo=<repo>.');
@@ -251,7 +239,7 @@
     const grouped = groupChapters(tree);
 
     if (!grouped.length) {
-      showError(`No chapters found under "${BASE}".\n\nPlace files like:\n  ${BASE}/chapter-001/001.jpg\n  ${BASE}/chapter-001/002.jpg`);
+      showError(`No chapters found under "${BASE}".\n\nPlace files like:\n  ${BASE}/chapter-001/001.jpg\n  ${BASE}/chapter-001/002.jpg\n\nTip: You can override with ?base=anime/solo-leveling`);
       return;
     }
 
@@ -263,7 +251,8 @@
     render();
   } catch (e) {
     const msg = String(e && e.message || e);
-    showError(`Error: ${msg}\n\nDetected:\n owner=${owner}\n repo=${repo}\n branch=${branch || '(detecting)'}\n base=${BASE}`);
+    const hint403 = msg.startsWith('403') ? '\n\n⚠️ Rate limit? Try again later or reduce file count.' : '';
+    showError(`Error: ${msg}${hint403}\n\nDetected:\n owner=${owner}\n repo=${repo}\n branch=${branch || '(detecting)'}\n base=${BASE}`);
   }
 })();
 </script>
